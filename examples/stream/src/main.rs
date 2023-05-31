@@ -36,11 +36,11 @@ pub fn run_example() -> Result<(), anyhow::Error> {
     let input_device = host
         .default_input_device()
         .expect("failed to get default input device");
-    //let output_device = host
-    //    .default_output_device()
-    //    .expect("failed to get default output device");
+    let output_device = host
+        .default_output_device()
+        .expect("failed to get default output device");
     println!("Using default input device: \"{}\"", input_device.name()?);
-    //println!("Using default output device: \"{}\"", output_device.name()?);
+    println!("Using default output device: \"{}\"", output_device.name()?);
 
     // Top level variables
     let config: cpal::StreamConfig = input_device.default_input_config()?.into();
@@ -65,24 +65,31 @@ pub fn run_example() -> Result<(), anyhow::Error> {
         }
     };
 
-    //let output_data_fn = move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-    //    let mut input_fell_behind = None;
-    //    for sample in data {
-    //        *sample = match consumer.pop() {
-    //            Some(s) => s,
-    //            None => {
-    //                input_fell_behind = Some("");
-    //                0.0
-    //            }
-    //        };
-    //    }
-    //    if let Some(err) = input_fell_behind {
-    //        eprintln!(
-    //            "input stream fell behind: {:?}: try increasing latency",
-    //            err
-    //        );
-    //    }
-    //};
+
+    let (mut producer2, mut consumer2) = SharedRb::new(latency_samples * 2).split();
+    for _ in 0..latency_samples {
+        // The ring buffer has twice as much space as necessary to add latency here,
+        // so this should never fail
+        producer2.push(0.0).unwrap();
+    }
+    let output_data_fn = move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+        let mut input_fell_behind = None;
+        for sample in data {
+            *sample = match consumer2.pop() {
+                Some(s) => s,
+                None => {
+                    input_fell_behind = Some("");
+                    0.0
+                }
+            };
+        }
+        if let Some(err) = input_fell_behind {
+            eprintln!(
+                "input stream fell behind: {:?}: try increasing latency",
+                err
+            );
+        }
+    };
 
     // Setup whisper
     let arg1 = std::env::args()
@@ -112,8 +119,8 @@ pub fn run_example() -> Result<(), anyhow::Error> {
     );
     println!("Setup input stream");
     let input_stream = input_device.build_input_stream(&config, input_data_fn, err_fn, None)?;
-    //println!("Setup output stream");
-    //let output_stream = output_device.build_output_stream(&config, output_data_fn, err_fn, None)?;
+    println!("Setup output stream");
+    let output_stream = output_device.build_output_stream(&config, output_data_fn, err_fn, None)?;
     println!("Successfully built streams.");
 
     // Play the streams.
@@ -122,7 +129,7 @@ pub fn run_example() -> Result<(), anyhow::Error> {
         LATENCY_MS
     );
     input_stream.play()?;
-    //output_stream.play()?;
+    output_stream.play()?;
 
     // Remove the initial samples
     consumer.pop_iter().count();
@@ -149,6 +156,7 @@ pub fn run_example() -> Result<(), anyhow::Error> {
 
         // Collect the samples
         let samples: Vec<_> = consumer.pop_iter().collect();
+        producer2.push_iter(&mut samples.clone().into_iter());
         let samples = whisper_rs::convert_stereo_to_mono_audio(&samples).unwrap();
         //let samples = make_audio_louder(&samples, 1.0);
         let num_samples_to_delete = iter_num_samples
